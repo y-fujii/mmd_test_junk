@@ -2,6 +2,29 @@
 
 import numpy
 import struct
+import unicodedata
+
+
+def argTopoSort( parents ):
+	children = [ [] for _ in parents ]
+	for i, p in enumerate( parents ):
+		if p >= 0:
+			children[p].append( i )
+
+	dst = []
+	def flatten( i ):
+		dst.append( i )
+		if len( dst ) > len( parents ):
+			raise ValueError()
+		for c in children[i]:
+			flatten( c )
+
+	for i, p in enumerate( parents ):
+		if p < 0:
+			flatten( i )
+
+	assert len( dst ) == len( parents )
+	return dst
 
 
 class Material( object ):
@@ -14,18 +37,19 @@ class Material( object ):
 class Loader( object ):
 
 	def load( self, file ):
-		self.file = file
-		self.loadHeader()
-		self.loadInfo()
-		self.loadVerts()
-		self.loadFaces()
-		self.loadTexs()
-		self.loadMaterials()
+		self._file = file
+		self._loadHeader()
+		self._loadInfo()
+		self._loadVerts()
+		self._loadFaces()
+		self._loadTexs()
+		self._loadMaterials()
+		self._loadBones()
 
-	def unpack( self, fmt ):
-		return struct.unpack( fmt, self.file.read( struct.calcsize( fmt ) ) )
+	def _unpack( self, fmt ):
+		return struct.unpack( fmt, self._file.read( struct.calcsize( fmt ) ) )
 
-	def typeSig( self, size ):
+	def _typeSig( self, size ):
 		return (
 			"B" if size == 1 else
 			"H" if size == 2 else
@@ -33,100 +57,104 @@ class Loader( object ):
 			None
 		)
 
-	def loadHeader( self ):
-		magic, ver, size = self.unpack( "4s f B" )
+	def _loadHeader( self ):
+		magic, ver, size = self._unpack( "4s f B" )
 		if magic != b"PMX " or ver < 2.0 or size < 8:
-			raise IOError()
+			raise ValueError()
 
-		data = self.unpack( "%dB" % size )
-		self.encoding = (
+		data = self._unpack( "%dB" % size )
+		self._encoding = (
 			"utf-16" if data[0] == 0 else
 			"utf-8"  if data[0] == 1 else
 			None
 		)
-		self.nUv   = data[1] # # of UVs
-		self.tVert = self.typeSig( data[2] ) # size of indices
-		self.tTex  = self.typeSig( data[3] ).lower() # size of texture indices
-		self.tMat  = self.typeSig( data[4] ).lower() # size of material indices
-		self.tBone = self.typeSig( data[5] ).lower() # size of material indices
+		self._nUv   = data[1] # # of UVs
+		self._tVert = self._typeSig( data[2] ) # type of indices
+		self._tTex  = self._typeSig( data[3] ).lower() # type of texture indices
+		self._tMat  = self._typeSig( data[4] ).lower() # type of material indices
+		self._tBone = self._typeSig( data[5] ).lower() # type of material indices
 	
-	def loadStr( self ):
-		N = self.unpack( "i" )
-		s, = self.unpack( "%ds" % N )
-		return unicode( s, self.encoding )
+	def _loadStr( self ):
+		N  = self._unpack( "i" )
+		s, = self._unpack( "%ds" % N )
+		return str( s, self._encoding )
 
-	def loadInfo( self ):
-		self.nameJa = self.loadStr()
-		self.nameEn = self.loadStr()
-		self.commJa = self.loadStr()
-		self.commEn = self.loadStr()
+	def _loadInfo( self ):
+		self._loadStr()
+		self._loadStr()
+		self._loadStr()
+		self._loadStr()
 	
-	def loadVerts( self ):
-		N, = self.unpack( "i" )
-		self.verts = numpy.zeros( [N, 3], numpy.float32 )
-		self.norms = numpy.zeros( [N, 3], numpy.float32 )
-		self.uvs   = numpy.zeros( [N, 2], numpy.float32 )
+	def _loadVerts( self ):
+		N, = self._unpack( "i" )
+		verts = numpy.recarray( (N,), dtype = [
+			("vert", numpy.float32, (3,)),
+			("norm", numpy.float32, (3,)),
+			("uv",   numpy.float32, (2,)),
+		] )
 		for i in range( N ):
-			self.verts[i, :] = self.unpack( "3f" )
-			self.norms[i, :] = self.unpack( "3f" )
-			self.uvs[i, :]   = self.unpack( "2f" )
+			verts[i].vert[:] = self._unpack( "3f" )
+			verts[i].norm[:] = self._unpack( "3f" )
+			verts[i].uv[:]   = self._unpack( "2f" )
 
-			for _ in range( self.nUv ):
-				self.unpack( "4f" )
+			for _ in range( self._nUv ):
+				self._unpack( "4f" )
 
-			wt, = self.unpack( "B" )
+			wt, = self._unpack( "B" )
 			if wt == 0:
-				self.unpack( self.tBone )
+				self._unpack( self._tBone )
 			elif wt == 1:
-				self.unpack( "2%s 1f" % self.tBone )
+				self._unpack( "2%s 1f" % self._tBone )
 			elif wt == 2:
-				self.unpack( "4%s 4f" % self.tBone )
+				self._unpack( "4%s 4f" % self._tBone )
 			elif wt == 3:
-				self.unpack( "2%s 1f 3f 3f 3f" % self.tBone )
+				self._unpack( "2%s 1f 3f 3f 3f" % self._tBone )
 			else:
-				IOError()
+				ValueError()
 
-			self.unpack( "f" )
+			self._unpack( "f" )
 
-	def loadFaces( self ):
-		N, = self.unpack( "i" )
+		self.verts = verts
+
+	def _loadFaces( self ):
+		N, = self._unpack( "i" )
 		if N % 3 != 0:
-			raise IOError()
+			raise ValueError()
 
-		self.faces = numpy.zeros( [N // 3, 3], numpy.uint32 )
+		self.faces = numpy.empty( [N // 3, 3], numpy.uint32 )
 		for i in range( N // 3 ):
-			self.faces[i, :] = self.unpack( "3%s" % self.tVert )
+			self.faces[i, :] = self._unpack( "3%s" % self._tVert )
 	
-	def loadTexs( self ):
-		N, = self.unpack( "i" )
-		self.texs = [ self.loadStr().replace( "\\", "/" ) for _ in range( N ) ]
+	def _loadTexs( self ):
+		N, = self._unpack( "i" )
+		self.texs = [ self._loadStr().replace( "\\", "/" ) for _ in range( N ) ]
 	
-	def loadMaterials( self ):
+	def _loadMaterials( self ):
 		self.materials = []
-		N, = self.unpack( "i" )
+		N, = self._unpack( "i" )
 		bgn = 0
 		for _ in range( N ):
-			name = self.loadStr()
-			self.loadStr()
-			diffuse = self.unpack( "4f" ) # diffuse
-			self.unpack( "3f" ) # specular
-			self.unpack( "1f" ) # specular coefficient
-			self.unpack( "3f" ) # ambient
-			self.unpack( "1B" ) # flag
-			self.unpack( "4f" ) # edge color
-			self.unpack( "1f" ) # edge size
-			tex, = self.unpack( self.tTex ) # normal texure
-			self.unpack( self.tTex ) # sphere texure
-			self.unpack( "1B" ) # sphere mode
-			isToon, = self.unpack( "1B" ) # toon flag
+			name = unicodedata.normalize( "NFKC", self._loadStr() )
+			self._loadStr()
+			diffuse = self._unpack( "4f" ) # diffuse
+			self._unpack( "3f" ) # specular
+			self._unpack( "1f" ) # specular coefficient
+			self._unpack( "3f" ) # ambient
+			self._unpack( "1B" ) # flag
+			self._unpack( "4f" ) # edge color
+			self._unpack( "1f" ) # edge size
+			tex, = self._unpack( self._tTex ) # normal texure
+			self._unpack( self._tTex ) # sphere texure
+			self._unpack( "1B" ) # sphere mode
+			isToon, = self._unpack( "1B" ) # toon flag
 			if isToon == 0:
-				self.unpack( self.tTex )
+				self._unpack( self._tTex )
 			else:
-				self.unpack( "1B" )
-			self.loadStr() # memo
-			size, = self.unpack( "1i" )
+				self._unpack( "1B" )
+			self._loadStr() # memo
+			size, = self._unpack( "1i" )
 			if size % 3 != 0:
-				raise IOError()
+				raise ValueError()
 
 			self.materials.append( Material(
 				name    = name,
@@ -136,3 +164,50 @@ class Loader( object ):
 				end     = bgn + size,
 			) )
 			bgn += size
+	
+	def _loadBones( self ):
+		N, = self._unpack( "i" )
+		bones = numpy.recarray( (N,), dtype = [
+			("pos",    numpy.float32, (3,)),
+			("parent", numpy.int32),
+			("after",  numpy.bool),
+		] )
+		boneMap = {}
+		for i in range( N ):
+			name = unicodedata.normalize( "NFKC", self._loadStr() )
+			boneMap[name] = i
+			self._loadStr()
+			bones[i].pos[:]  = self._unpack( "3f" )
+			bones[i].parent, = self._unpack( self._tBone )
+			self._unpack( "1i" )
+
+			flag, = self._unpack( "1H" )
+			bones[i].after = flag & 0x1000 != 0
+			if flag & 0x0001 == 0:
+				self._unpack( "3f" )
+			else:
+				self._unpack( self._tBone )
+			if flag & (0x0100 | 0x0200) != 0:
+				self._unpack( self._tBone )
+				self._unpack( "1f" )
+			if flag & 0x0400 != 0:
+				self._unpack( "3f" )
+			if flag & 0x0800 != 0:
+				self._unpack( "3f" )
+				self._unpack( "3f" )
+			if flag & 0x2000 != 0:
+				self._unpack( "1i" )
+			if flag & 0x0020 != 0:
+				tb, = self._unpack( self._tBone )
+				self._unpack( "1i" )
+				self._unpack( "1f" )
+				nLink, = self._unpack( "1i" )
+				for _ in range( nLink ):
+					lb, = self._unpack( self._tBone )
+					c, = self._unpack( "1B" )
+					if c != 0:
+						self._unpack( "3f" )
+						self._unpack( "3f" )
+
+		self.bones = bones[argTopoSort( bones.parent )]
+		self.boneMap = boneMap

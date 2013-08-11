@@ -1,47 +1,61 @@
 # by Yasuhiro Fujii <y-fujii at mimosa-pudica.net>, public domain
 
 import struct
+import numpy
+import unicodedata
 
 
 class Loader( object ):
 
-	def load( self, file ):
-		self.file = file
-		magic = self.loadStr( 30 )
+	def load( self, file, boneMap, skeyMap ):
+		self._file = file
+		self.boneMap = boneMap
+		self.skeyMap = skeyMap
+		magic = self._loadStr( 30 )
 		if not magic.startswith( "Vocaloid Motion Data" ):
-			raise IOError()
-		self.loadStr( 20 )
+			raise ValueError()
+		self._loadStr( 20 )
 
-		self.loadBone()
-		self.loadFace()
+		self._loadBones()
+		self._loadSKeys()
 
-	def unpack( self, fmt ):
-		return struct.unpack( fmt, self.file.read( struct.calcsize( fmt ) ) )
+	def _unpack( self, fmt ):
+		return struct.unpack( fmt, self._file.read( struct.calcsize( fmt ) ) )
 
-	def loadStr( self, size ):
-		s = self.read( size )
-		i = s.index( "\0" )
-		return unicode( s[:i], "cp932" )
+	def _loadStr( self, N ):
+		s = self._file.read( N )
+		i = s.index( b"\0" )
+		return str( s[:i], "cp932" )
 
-	def loadBone( self ):
-		bones = []
-		size, = self.unpack( "I" )
-		for _ in range( size ):
-			name  = self.loadStr( 15 )
-			time, = self.unpack( "1I" )
-			loc   = self.unpack( "3f" )
-			rot   = self.unpack( "4f" )
-			self.loadStr( 64 )
-			bones.append( (time, name, loc, rot) )
+	def _loadBones( self ):
+		N, = self._unpack( "I" )
+		bones = numpy.recarray( (N,), dtype = [
+			("frame", numpy.int32),
+			("bone",  numpy.int32),
+			("loc",   numpy.float32, (3,)),
+			("rot",   numpy.float32, (4,)),
+		] )
+		for i in range( N ):
+			name = unicodedata.normalize( "NFKC", self._loadStr( 15 ) )
+			bones[i].bone   = self.boneMap.get( name, -1 )
+			bones[i].frame  = self._unpack( "1i" )
+			bones[i].loc[:] = self._unpack( "3f" )
+			bones[i].rot[:] = self._unpack( "4f" )
+			self._loadStr( 64 )
 		
-		self.bones = sorted( bones )
+		self.bones = bones[numpy.argsort( bones.frame )]
 
-	def loadFace( self ):
-		faces = []
-		size, = self.unpack( "I" )
-		for _ in range( size ):
-			name = self.loadStr( 15 )
-			time, value = self.unpack( "I f" )
-			faces.append( (time, name, value) )
+	def _loadSKeys( self ):
+		N, = self._unpack( "I" )
+		skeys = numpy.recarray( (N,), dtype = [
+			("frame", numpy.int32),
+			("skey",  numpy.int32),
+			("val",   numpy.float32),
+		] )
+		for i in range( N ):
+			name = unicodedata.normalize( "NFKC", self._loadStr( 15 ) )
+			skeys[i].skey   = self.skeyMap.get( name, -1 )
+			skeys[i].frame, = self._unpack( "i" )
+			skeys[i].val,   = self._unpack( "f" )
 
-		self.faces = sorted( faces )
+		self.skeys = skeys[numpy.argsort( skeys.frame )]

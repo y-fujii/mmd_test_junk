@@ -8,10 +8,17 @@ from OpenGL.GL import shaders
 class Shader( object ):
 
 	def __init__( self, vertSrc, fragSrc ):
-		self.prog = shaders.compileProgram(
-			shaders.compileShader( vertSrc, GL_VERTEX_SHADER ),
-			shaders.compileShader( fragSrc, GL_FRAGMENT_SHADER ),
-		)
+		#self.prog = shaders.compileProgram(
+		#	shaders.compileShader( vertSrc, GL_VERTEX_SHADER ),
+		#	shaders.compileShader( fragSrc, GL_FRAGMENT_SHADER ),
+		#)
+		vertShader = glCreateShader( GL_VERTEX_SHADER )
+		glShaderSource( vertShader, vertSrc )
+		glCompileShader( vertShader )
+		fragShader = glCreateShader( GL_FRAGMENT_SHADER )
+		glShaderSource( fragShader, fragSrc )
+		glCompileShader( fragShader )
+		self.prog = shaders.compileProgram( vertShader, fragShader )
 	
 	def use( self ):
 		glUseProgram( self.prog )

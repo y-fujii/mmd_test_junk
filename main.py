@@ -1,17 +1,20 @@
-#!/usr/bin/env python2
+#!/usr/bin/python3
 # encoding: utf-8
 # by Yasuhiro Fujii <y-fujii at mimosa-pudica.net>, public domain
 
+from pprint import pprint
 import math
+import bisect
 import time
 import io
 import numpy
 from OpenGL.GL import *
-import Image
+from PIL import Image
 import matrix3d
 import quaternion
 import glutils
 import pmx
+import vmd
 
 
 class Renderer( object ):
@@ -69,11 +72,19 @@ class Renderer( object ):
 		}
 	"""
 
-	def __init__( self, data ):
-		self.faces = data.faces
-		self.materials = data.materials
+	def __init__( self, model, motion ):
+		self.model  = model
+		self.motion = motion
+		self.bones = numpy.recarray( (model.bones.shape[0],), dtype = [
+			("rLoc", numpy.float32, (3,)),
+			("rRot", numpy.float32, (4,)),
+			("aLoc", numpy.float32, (3,)),
+			("aRot", numpy.float32, (4,)),
+			("aMat", numpy.float32, (4, 4)),
+		] )
+		self.frame = 0
 
-		for (i, tex) in enumerate( data.texs ):
+		for (i, tex) in enumerate( model.texs ):
 			glActiveTexture( GL_TEXTURE0 + i )
 			glBindTexture( GL_TEXTURE_2D, i )
 			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP )
@@ -84,9 +95,9 @@ class Renderer( object ):
 
 		self.shader = glutils.Shader( self.vertSrc, self.fragSrc )
 		self.shader.use()
-		self.shader.attrib( "aP",  data.verts )
-		self.shader.attrib( "aN",  data.norms )
-		self.shader.attrib( "aUv", data.uvs   )
+		self.shader.attrib( b"aP",  model.verts.vert )
+		self.shader.attrib( b"aN",  model.verts.norm )
+		self.shader.attrib( b"aUv", model.verts.uv   )
 
 		glDepthFunc( GL_LEQUAL )
 		glEnable( GL_DEPTH_TEST )
@@ -106,7 +117,7 @@ class Renderer( object ):
 
 		# XXX: sort transparent polygon
 		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT )
-		self.shader.uniform( "uM",
+		self.shader.uniform( b"uM",
 			numpy.matrix( [
 				[1.0, 0.0, 0.0, 0.0],
 				[0.0, 1.0, 0.0, 0.0],
@@ -119,30 +130,73 @@ class Renderer( object ):
 			matrix3d.scale( 0.09 )
 		)
 
-		for m in self.materials:
-			if m.name.find( u"体" ) >= 0 or m.name.find( u"skin" ) >= 0:
-				self.shader.uniform( "uType", 1 )
-			elif m.name.find( u"顔" ) >= 0 or m.name.find( u"face" ) >= 0:
-				self.shader.uniform( "uType", 2 )
-			elif m.name.find( u"目" ) >= 0 or m.name.find( u"eye" ) >= 0:
-				self.shader.uniform( "uType", 2 )
+		for m in self.model.materials:
+			if m.name.find( "体" ) >= 0 or m.name.find( "skin" ) >= 0:
+				self.shader.uniform( b"uType", 1 )
+			elif m.name.find( "顔" ) >= 0 or m.name.find( "face" ) >= 0:
+				self.shader.uniform( b"uType", 2 )
+			elif m.name.find( "目" ) >= 0 or m.name.find( "eye" ) >= 0:
+				self.shader.uniform( b"uType", 2 )
 			else:
-				self.shader.uniform( "uType", 0 )
-			self.shader.uniform( "uTex", m.tex )
+				self.shader.uniform( b"uType", 0 )
+			self.shader.uniform( b"uTex", m.tex )
 
-			glDrawElementsui( GL_TRIANGLES, self.faces[m.bgn // 3 : m.end // 3] )
+			glDrawElementsui( GL_TRIANGLES, self.model.faces[m.bgn // 3 : m.end // 3] )
+	
+	def updateFrame( self, frame ):
+		bgn = bisect.bisect_left ( self.motion.bones.frame, self.frame )
+		end = bisect.bisect_right( self.motion.bones.frame, frame )
+		for i in range( bgn, end ):
+			boneKey = self.motion.bones[i]
+			self.bones[boneKey.bone].rRot = boneKey.rot
+			self.bones[boneKey.bone].rLoc = boneKey.loc
+		
+		timeBgn = time.time()
+		#for i in range( len( self.bones ) ):
+		#	parent = self.model.bones[i].parent
+		#	if parent < 0:
+		#		self.bones[i].aRot = self.bones[i].rRot
+		#		self.bones[i].aLoc = self.bones[i].rLoc
+		#	else:
+		#		self.bones[i].aRot = quaternion.mul(
+		#			self.bones[i].rRot,
+		#			self.bones[parent].aRot
+		#		)
+		#		self.bones[i].aLoc = quaternion.transform(
+		#			self.bones[i].aRot,
+		#			self.bones[i].rLoc,
+		#		) + self.bones[parent].aLoc
+		parents = self.model.bones.parent
+		aRots = self.bones.aRot
+		aLocs = self.bones.aLoc
+		rRots = self.bones.rRot
+		rLocs = self.bones.rLoc
+		for i in range( len( self.bones ) ):
+			parent = parents[i]
+			if parent < 0:
+				aRots[i] = rRots[i]
+				aLocs[i] = rLocs[i]
+			else:
+				aRots[i] = quaternion.mul( rRots[i], aRots[parent] )
+				aLocs[i] = quaternion.transform( aRots[i], rLocs[i] ) + aLocs[parent]
+		timeEnd = time.time()
+
+		# too slow...
+		print( timeEnd - timeBgn )
+
+		self.frame = frame
 
 
 from OpenGL import GLUT
 
 class GlutWindow( object ):
 
-	def __init__( self, data ):
+	def __init__( self, model, motion ):
 		GLUT.glutCreateWindow( "test" )
 		GLUT.glutDisplayFunc( self.onDisplay )
 		GLUT.glutReshapeFunc( self.onReshape )
 		GLUT.glutIdleFunc( self.onIdle )
-		self.renderer = Renderer( data )
+		self.renderer = Renderer( model, motion )
 
 	def onDisplay( self ):
 		self.renderer.render()
@@ -162,14 +216,18 @@ from PyQt4 import QtOpenGL
 
 class QtWindow( QtOpenGL.QGLWidget ):
 
-	def __init__( self, data ):
+	def __init__( self, model, motion ):
 		QtOpenGL.QGLWidget.__init__( self )
 		self.setWindowFlags( QtCore.Qt.FramelessWindowHint )
 		self.setAttribute( QtCore.Qt.WA_TranslucentBackground )
 		self.setAttribute( QtCore.Qt.WA_TransparentForMouseEvents )
 		self.setWindowOpacity( 0.75 )
 
-		self.data = data
+		self.model  = model
+		self.motion = motion
+		self.frame = 0
+		self.timeBgn = time.time()
+		self.timeFps = 24.0
 		self.timer = QtCore.QTimer()
 		self.timer.timeout.connect( self.onTimer )
 		self.timer.start( 0 )
@@ -182,25 +240,32 @@ class QtWindow( QtOpenGL.QGLWidget ):
 		glViewport( (w - l) // 2, (h - l) // 2, l, l )
 	
 	def initializeGL( self ):
-		self.renderer = Renderer( self.data )
+		self.renderer = Renderer( self.model, self.motion )
 	
 	def onTimer( self ):
+		self.renderer.updateFrame( int( (time.time() - self.timeBgn) * self.timeFps ) )
 		self.updateGL()
 
 
 def main():
-	loader = pmx.Loader()
+	pmxLoader = pmx.Loader()
 	with io.open( "test.pmx", "rb" ) as f:
-		loader.load( f )
+		pmxLoader.load( f )
+	print( dir( pmxLoader ) )
+
+	vmdLoader = vmd.Loader()
+	with io.open( "test.vmd", "rb" ) as f:
+		vmdLoader.load( f, pmxLoader.boneMap, {} )
+	print( dir( vmdLoader ) )
 
 	if False:
-		glutInit()
-		glutInitDisplayMode( GLUT_DOUBLE | GLUT_DEPTH | GLUT_RGBA )
-		window = GlutWindow( loader )
-		glutMainLoop()
-	else:
+		GLUT.glutInit()
+		GLUT.glutInitDisplayMode( GLUT.GLUT_DOUBLE | GLUT.GLUT_DEPTH | GLUT.GLUT_RGBA )
+		window = GlutWindow( pmxLoader, vmdLoader )
+		GLUT.glutMainLoop()
+	elif True:
 		app = QtGui.QApplication( [] )
-		widget = QtWindow( loader )
+		widget = QtWindow( pmxLoader, vmdLoader )
 		widget.show()
 		app.exec_()
 

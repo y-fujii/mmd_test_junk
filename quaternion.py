@@ -1,23 +1,28 @@
 # by Yasuhiro Fujii <y-fujii at mimosa-pudica.net>, public domain
 
-import collections
 import math
 import numpy
 
 
 def conj( x ):
-	return numpy.concatenate( [ x[:1], -x[1:] ] )
+	r = numpy.empty_like( x )
+	r[0 ] =  x[0 ]
+	r[1:] = -x[1:]
+	return r
 
 def mul( x, y ):
-	return numpy.array( [
-		x[0] * y[0] - x[1] * y[1] - x[2] * y[2] - x[3] * y[3],
-		x[0] * y[1] + x[1] * y[0] + x[2] * y[3] - x[3] * y[2],
-		x[0] * y[2] - x[1] * y[3] + x[2] * y[0] + x[3] * y[1],
-		x[0] * y[3] + x[1] * y[2] - x[2] * y[1] + x[3] * y[0],
-	] )
+	r = numpy.empty_like( x, dtype = numpy.result_type( x, y ) )
+	r[0] = x[0] * y[0] - x[1] * y[1] - x[2] * y[2] - x[3] * y[3]
+	r[1] = x[0] * y[1] + x[1] * y[0] + x[2] * y[3] - x[3] * y[2]
+	r[2] = x[0] * y[2] - x[1] * y[3] + x[2] * y[0] + x[3] * y[1]
+	r[3] = x[0] * y[3] + x[1] * y[2] - x[2] * y[1] + x[3] * y[0]
+	return r
+
+def inv( x ):
+	return conj( x ) / numpy.dot( x, x )
 
 def div( x, y ):
-	return mul( x, conj( y ) ) / numpy.sum( y * y )
+	return mul( x, conj( y ) ) / numpy.dot( y, y )
 
 def matrix4( x ):
 	x00 = x[0] * x[0]
@@ -35,27 +40,58 @@ def matrix4( x ):
 		[ 2.0 * (x12 + x03),     x00 - x11 + x22 - x33, 2.0 * (x23 - x01),     0.0 ],
 		[ 2.0 * (x13 - x02),     2.0 * (x23 + x01),     x00 - x11 - x22 + x33, 0.0 ],
 		[ 0.0,                   0.0,                   0.0,                   1.0 ],
-	] )
+	], dtype = x.dtype )
+
+def transform( q, x ):
+	#r = numpy.zeros( (4,), dtype = x.dtype )
+	#r[1:] = x
+	#return mul( mul( q, r ), conj( q ) )[1:]
+
+	r0 = q[2] * x[2] - q[3] * x[1] + q[0] * x[0]
+	r1 = q[3] * x[0] - q[1] * x[2] + q[0] * x[1]
+	r2 = q[1] * x[1] - q[2] * x[0] + q[0] * x[2]
+
+	s = numpy.empty_like( x )
+	s[0] = (q[2] * r2 - q[3] * r1) * 2.0 + x[0]
+	s[1] = (q[3] * r0 - q[1] * r2) * 2.0 + x[1]
+	s[2] = (q[1] * r1 - q[2] * r0) * 2.0 + x[2]
+	return s
+
+def rotation( axis, theta ):
+	c = math.cos( theta * 0.5 )
+	s = math.sin( theta * 0.5 )
+	n = math.sqrt( sum( t * t for t in axis ) )
+	return numpy.array( [ c * n, axis[0] * s, axis[1] * s, axis[2] * s ] )
+
+def from_float( x, dtype ):
+	r = numpy.zeros( (4,), dtype = dtype )
+	r[0] = x
+	return r
+
+def quaternion( src ):
+	if isinstance( src, float ):
+		r = from_float( src, numpy.float64 )
+	elif isinstance( src, complex ):
+		r = numpy.zeros( (4,), dtype = numpy.float64 )
+		r[0] = src.real
+		r[1] = src.imag
+	elif isinstance( src, (numpy.ndarray, list) ):
+		r = numpy.array( src )
+		if r.shape != (4,):
+			raise ValueError()
+	else:
+		raise ValueError()
+
+	return Quaternion( r )
 
 
-# XXX
 class Quaternion( object ):
 
 	__slots__ = [ "_data" ]
 
-	def __init__( self, src ):
-		if isinstance( src, Quaternion ):
-			self._data = numpy.array( src._data )
-		elif isinstance( src, float ):
-			self._data = numpy.array( [src, 0.0, 0.0, 0.0] )
-		elif isinstance( src, complex ):
-			self._data = numpy.array( [src.real, src.imag, 0.0, 0.0] )
-		elif isinstance( src, collections.Iterable ):
-			self._data = numpy.array( list( src ) )
-			if self._data.shape != (4,):
-				raise ValueError()
-		else:
-			raise ValueError()
+	def __init__( self, data ):
+		assert type( data ) is numpy.ndarray
+		self._data = data
 
 	def __str__( self ):
 		return str( self._data )
@@ -73,34 +109,74 @@ class Quaternion( object ):
 		return Quaternion( -self._data )
 
 	def __add__( lhs, rhs ):
-		return Quaternion( lhs._data + Quaternion( rhs )._data )
+		if isinstance( rhs, float ):
+			return Quaternion( lhs._data + from_float( rhs, lhs._data.dtype ) )
+		elif isinstance( rhs, Quaternion ):
+			return Quaternion( lhs._data + rhs._data )
+		else:
+			return NotImplemented
 	
 	def __radd__( lhs, rhs ):
-		return Quaternion( Quaternion( lhs._data ) + rhs._data )
+		if isinstance( lhs, float ):
+			return Quaternion( from_float( rhs, lhs._data.dtype ) + rhs._data )
+		elif isinstance( rhs, Quaternion ):
+			return Quaternion( lhs._data + rhs._data )
+		else:
+			return NotImplemented
 
 	def __sub__( lhs, rhs ):
-		return Quaternion( lhs._data - Quaternion( rhs )._data )
+		if isinstance( rhs, float ):
+			return Quaternion( lhs._data - from_float( rhs, lhs._data.dtype ) )
+		elif isinstance( rhs, Quaternion ):
+			return Quaternion( lhs._data - rhs._data )
+		else:
+			return NotImplemented
 	
 	def __rsub__( lhs, rhs ):
-		return Quaternion( Quaternion( lhs._data ) - rhs._data )
+		if isinstance( lhs, float ):
+			return Quaternion( from_float( lhs, rhs._data.dtype ) - rhs._data )
+		elif isinstance( rhs, Quaternion ):
+			return Quaternion( lhs._data - rhs._data )
+		else:
+			return NotImplemented
 
 	def __mul__( lhs, rhs ):
-		return Quaternion( mul( lhs._data, Quaternion( rhs )._data ) )
+		if isinstance( rhs, float ):
+			return Quaternion( lhs._data * rhs )
+		elif isinstance( rhs, Quaternion ):
+			return Quaternion( mul( lhs._data, rhs._data ) )
+		else:
+			return NotImplemented
 
 	def __rmul__( lhs, rhs ):
-		return Quaternion( mul( Quaternion( lhs )._data, rhs._data ) )
+		if isinstance( lhs, float ):
+			return Quaternion( lhs * rhs._data )
+		elif isinstance( lhs, Quaternion ):
+			return Quaternion( mul( lhs._data, rhs._data ) )
+		else:
+			return NotImplemented
 
 	def __div__( lhs, rhs ):
-		return Quaternion( div( lhs._data, Quaternion( rhs )._data ) )
+		if isinstance( rhs, float ):
+			return Quaternion( lhs._data / rhs )
+		elif isinstance( rhs, Quaternion ):
+			return Quaternion( div( lhs._data, rhs._data ) )
+		else:
+			return NotImplemented
 
 	def __rdiv__( rhs, lhs ):
-		return Quaternion( div( Quaternion( lhs )._data, rhs._data ) )
+		if isinstance( lhs, float ):
+			return Quaternion( lhs * inv( rhs._data ) )
+		elif isinstance( lhs, Quaternion ):
+			return Quaternion( div( lhs._data, rhs._data ) )
+		else:
+			return NotImplemented
 
 	def conj( self ):
 		return Quaternion( conj( self._data ) )
 	
 	def norm2( self ):
-		return numpy.sum( self._data * self._data )
+		return numpy.dot( self._data, self._data )
 
 	def norm1( self ):
 		return math.sqrt( self.norm2() )
@@ -112,21 +188,18 @@ class Quaternion( object ):
 		return self._data
 
 
-def rotation( axis, theta ):
-	c = math.cos( theta * 0.5 )
-	s = math.sin( theta * 0.5 )
-	n = math.sqrt( sum( t * t for t in axis ) )
-	return Quaternion( [ c * n, axis[0] * s, axis[1] * s, axis[2] * s ] )
-
-
 if __name__ == "__main__":
-	q = Quaternion( [0.1, 0.2, 0.3, -0.4] )
-	r = Quaternion( [0.5, 0.6, -0.7, 0.8] )
-	print( (q + r - q - r).norm2() )
-	print( (q / 1.0 - q).norm2() )
-	print( (1.0 / q * q - 1.0).norm2() )
-	print( (q * 2.0 - q - q).norm2() )
-	print( (q / r * r / q - 1.0).norm2() )
-	print( rotation( [1.0, 0.0, 0.0], math.pi / 4.0 ).matrix4() )
-	print( rotation( [0.0, 1.0, 0.0], math.pi / 4.0 ).matrix4() )
-	print( rotation( [0.0, 0.0, 1.0], math.pi / 4.0 ).matrix4() )
+	q = quaternion( [0.1, 0.2, 0.3, -0.4] )
+	r = quaternion( [0.5, 0.6, -0.7, 0.8] )
+	print( q + r - q - r )
+	print( q / 1.0 - q )
+	print( 1.0 / q * q - 1.0 )
+	print( q * 2.0 - q - q )
+	print( q / r * r / q - 1.0 )
+	print( matrix4( rotation( [1.0, 0.0, 0.0], math.pi / 4.0 ) ) )
+	print( matrix4( rotation( [0.0, 1.0, 0.0], math.pi / 4.0 ) ) )
+	print( matrix4( rotation( [0.0, 0.0, 1.0], math.pi / 4.0 ) ) )
+	print( transform(
+		rotation( [0.0, 0.0, 1.0], math.pi / 4.0 ),
+		numpy.array( [ 1.0, 0.0, 0.0 ] )
+	) )

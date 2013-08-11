@@ -28,7 +28,7 @@ def rotate( axis, theta ):
 
 
 if __name__ == "__main__":
-	print translate( [ 1.0, 2.0, 3.0 ] )
-	print rotate( 0, math.pi / 4 )
-	print rotate( 1, math.pi / 4 )
-	print rotate( 2, math.pi / 4 )
+	print( translate( [ 1.0, 2.0, 3.0 ] ) )
+	print( rotate( 0, math.pi / 4 ) )
+	print( rotate( 1, math.pi / 4 ) )
+	print( rotate( 2, math.pi / 4 ) )
